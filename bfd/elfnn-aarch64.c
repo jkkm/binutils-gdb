@@ -5272,6 +5272,9 @@ elfNN_aarch64_check_relocs (bfd *abfd, struct bfd_link_info *info,
 	    if ((got_type & GOT_TLS_IE) && GOT_TLS_GD_ANY_P (got_type))
 	      got_type &= ~ (GOT_TLSDESC_GD | GOT_TLS_GD);
 
+	    if (!info->executable && (got_type & GOT_TLS_IE))
+	      info->flags |= DF_STATIC_TLS;
+
 	    if (old_got_type != got_type)
 	      {
 		if (h != NULL)
