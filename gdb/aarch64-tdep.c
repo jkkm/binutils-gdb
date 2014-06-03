@@ -852,6 +852,99 @@ aarch64_analyze_prologue (struct gdbarch *gdbarch,
   return start;
 }
 
+/* Attempt to skip the stack protector instructions in a function prologue.
+   If PC points to the first instruction of the sequence, return the
+   address of the instruction after the stack protector sequence.  Otherwise,
+   return the original PC.
+
+   On AArch64, the stack protector sequence is composed of four instructions:
+
+    adrp x0, __stack_chk_guard
+    add  x0, x0, #:lo12:__stack_chk_guard
+    ldr  x0, [x0]
+    str  x0, [x29, #end-of-stack]
+
+   Which loads the address of __stack_chk_guard, then loads the guard from it,
+   and stores it at the end of the stack.  */
+
+static CORE_ADDR
+aarch64_skip_stack_chk_guard (CORE_ADDR pc, struct gdbarch *gdbarch)
+{
+  enum bfd_endian byte_order_for_code = gdbarch_byte_order_for_code (gdbarch);
+  CORE_ADDR addr = pc;
+  CORE_ADDR loc = pc;
+  uint32_t insn;
+  int64_t imm;
+  int32_t imm32;
+  unsigned rd, rd2, rn, rt;
+  int page;
+  const int insn_size = 4;
+  struct bound_minimal_symbol stack_chk_guard;
+
+  /* Attempt to find the label formation of __stack_chk_guard.  */
+  insn = read_memory_unsigned_integer (loc, insn_size, byte_order_for_code);
+  if (!decode_adrp (loc, insn, &page, &rd, &imm))
+    return pc;
+
+  /* Bail if we saw an ADR instruction, not an ADRP.  */
+  if (!page)
+    return pc;
+
+  loc += insn_size;
+  addr &= ~((1 << 12) - 1);
+  addr += imm;
+
+  insn = read_memory_unsigned_integer (loc, insn_size, byte_order_for_code);
+  if (!decode_add_sub_imm (loc, insn, &rd2, &rn, &imm32))
+    return pc;
+
+  /* Ensure ADD register matches the ADRP instruction.  */
+  if (rn != rd)
+    return pc;
+
+  loc += insn_size;
+  addr += imm32;
+
+  /* See if we calculated the address of the __stack_chk_guard symbol.  */
+  stack_chk_guard = lookup_minimal_symbol_by_pc (addr);
+  if (stack_chk_guard.minsym
+      && strncmp (MSYMBOL_LINKAGE_NAME (stack_chk_guard.minsym),
+		  "__stack_chk_guard", strlen ("__stack_chk_guard")) != 0)
+    return pc;
+
+  /* Check if the next instruction is a load from the same registers.  */
+  insn = read_memory_unsigned_integer (loc, insn_size, byte_order_for_code);
+  if (decode_masked_match (insn, 0xffc00000, 0xf9400000))
+    {
+      rt = insn & 0x1F;
+      rn = (insn >> 5) & 0x1F;
+
+      if (rn != rd2)
+	return pc;
+    }
+  else
+    return pc;
+
+  /* Finally, look for a store of the guard to the stack.  */
+  loc += insn_size;
+  insn = read_memory_unsigned_integer (loc, insn_size, byte_order_for_code);
+  if (decode_masked_match (insn, 0xffc00000, 0xf9000000))
+    {
+      unsigned rt2 = insn & 0x1F;
+
+      /* Check we're storing the guard from the previous load instruction.  */
+      if (rt2 != rt)
+        return pc;
+    }
+  else
+    return pc;
+
+  /* If we've made it this far, we've walked through the 4 instruction
+     sequence around __stack_chk_guard, and can skip over it in the function
+     prologue.  */
+  return loc + insn_size;
+}
+
 /* Implement the "skip_prologue" gdbarch method.  */
 
 static CORE_ADDR
@@ -871,7 +964,11 @@ aarch64_skip_prologue (struct gdbarch *gdbarch, CORE_ADDR pc)
 	= skip_prologue_using_sal (gdbarch, func_addr);
 
       if (post_prologue_pc != 0)
-	return max (pc, post_prologue_pc);
+	{
+	  post_prologue_pc = aarch64_skip_stack_chk_guard (post_prologue_pc,
+							   gdbarch);
+	  return max (pc, post_prologue_pc);
+	}
     }
 
   /* Can't determine prologue from the symbol table, need to examine
