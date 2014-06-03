@@ -255,7 +255,7 @@ decode_add_sub_imm (CORE_ADDR addr, uint32_t insn, unsigned *rd, unsigned *rn,
   return 0;
 }
 
-/* Decode an opcode if it represents an ADRP instruction.
+/* Decode an opcode if it represents an ADRP/ADR instruction.
 
    ADDR specifies the address of the opcode.
    INSN specifies the opcode to test.
@@ -264,16 +264,28 @@ decode_add_sub_imm (CORE_ADDR addr, uint32_t insn, unsigned *rd, unsigned *rn,
    Return 1 if the opcodes matches and is decoded, otherwise 0.  */
 
 static int
-decode_adrp (CORE_ADDR addr, uint32_t insn, unsigned *rd)
+decode_adrp (CORE_ADDR addr, uint32_t insn, int *page, unsigned *rd,
+	     int64_t *imm)
 {
-  if (decode_masked_match (insn, 0x9f000000, 0x90000000))
+  if (decode_masked_match (insn, 0x1f000000, 0x10000000))
     {
       *rd = (insn >> 0) & 0x1f;
+      *imm = (extract_signed_bitfield (insn, 19, 5) << 2)
+	      | ((insn >> 29) & 0x3);
+      *page = 0;
+
+      if (insn & 0x80000000)
+	{
+	  *page = 1;
+	  *imm <<= 12;
+	}
 
       if (aarch64_debug)
 	fprintf_unfiltered (gdb_stdlog,
-			    "decode: 0x%s 0x%x adrp x%u, #?\n",
-			    core_addr_to_string_nz (addr), insn, *rd);
+			    "decode: 0x%s 0x%x %s x%u, #0x%llx\n",
+			    core_addr_to_string_nz (addr), insn,
+			    *page ? "adrp" : "adr", *rd,
+			    (unsigned long long)*imm);
       return 1;
     }
   return 0;
@@ -681,8 +693,10 @@ aarch64_analyze_prologue (struct gdbarch *gdbarch,
       unsigned rt2;
       int op_is_sub;
       int32_t imm;
+      int64_t imm64;
       unsigned cond;
       int is64;
+      int page;
       unsigned is_link;
       unsigned op;
       unsigned bit;
@@ -692,7 +706,7 @@ aarch64_analyze_prologue (struct gdbarch *gdbarch,
 
       if (decode_add_sub_imm (start, insn, &rd, &rn, &imm))
 	regs[rd] = pv_add_constant (regs[rn], imm);
-      else if (decode_adrp (start, insn, &rd))
+      else if (decode_adrp (start, insn, &page, &rd, &imm64))
 	regs[rd] = pv_unknown ();
       else if (decode_b (start, insn, &is_link, &offset))
 	{
