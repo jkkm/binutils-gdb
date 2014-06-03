@@ -1,0 +1,43 @@
+# Copyright 2014 Free Software Foundation, Inc.
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+#
+# This file is part of the gdb testsuite.
+
+# Test that we single step past the __stack_chk_guard setup in the
+# prologue of functions.
+
+if {![istarget "aarch64*"]} {
+    verbose "Skipping ${gdb_test_file_name}."
+    return
+}
+
+standard_testfile
+set additional_flags "additional_flags=-fstack-protector"
+if { [gdb_compile "${srcdir}/${subdir}/${srcfile}" "${binfile}" executable [list debug $additional_flags]] != "" } {
+    unsupported "compiler does not support -fstack-protector"
+    return
+}
+
+clean_restart "${binfile}"
+if ![runto_main] {
+    untested "could not run to main"
+    return -1
+}
+
+gdb_breakpoint "stack_chk_guard_fn"
+
+# Previously, we'd see a { as we're still in the function prologue.
+gdb_continue_to_breakpoint "continue into stack_chk_guard_fn" ".*return 0;.*"
